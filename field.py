@@ -16,6 +16,21 @@ log = logging.getLogger(constant.LOGGER_NAME)
 class Py8583Field(object):
     _FORMAT_STR = '{index}'
     def __init__(self, index, field_name, content_type, data_len_max, data_len_type, encoding='latin', remark=''):
+        """
+        value -> content -> data -> field
+
+        data = content_len(可空) + content
+        content: 存放该域的值(value), 可能会对value做些封装, 比如: 根据content_type对value做padding
+
+        :param index: 域, 第几域
+        :param field_name: 该域的名称, 如 'Primary account number (PAN)'
+        :param content_type: 该域的值的类型, 可以是: 字母字符串, 数字字符串, 二进制串, 月份(MM), 日期(DD)等
+        :param data_len_max: 将该域的值(content)打包为data后, data的最大长度
+        :param data_len_type: data的长度类型, 定长, 1位变长, 2位变长, 3位变长
+        :param data_type: 封装该域的值(content) 的容器的类型,可以是二进制,ASC字符串,BCD码
+        :param encoding: content的编码, 如utf8, latin. 需要将value编码为encoding指定的编码方式.
+        :param remark: 备注
+        """
         self.index = index  # 域索引
 
         self.field_type = None  # 域名类型
@@ -38,73 +53,83 @@ class Py8583Field(object):
             indent=4
         )
 
-    def encode_content_len(self, content):
+    def gen_data_len(self, data):
+        """
+        通过content, 计算得到data_len
+        :param data:
+        :type data: str
+        :return:
+        :rtype: str | None
+        """
+
         if self.data_len_type == constant.LengthType.FIXED:
-            len_data = None
+            data_len_final = None
         else:
-            content_len = len(content)
-            if content_len > self.data_len_max:
+            data_len = len(data)
+            if data_len > self.data_len_max:
                 raise err.Py8583DataTooLongError(
-                    'field(%s) Got content_len(%s) > max(%s), content(%s)'
-                    % (self, content_len, self.data_len_max, content)
+                    'field(%s) Got content_len(%s) > max(%s), data(%s)'
+                    % (self, data_len, self.data_len_max, data)
                 )
 
             if self.data_len_type == constant.LengthType.LVAR:
-                len_data = "{0:01d}".format(content_len)
+                data_len_str = "{0:01d}".format(data_len)
             elif self.data_len_type == constant.LengthType.LLVAR:
-                len_data = "{0:02d}".format(content_len)
+                data_len_str = "{0:02d}".format(data_len)
             elif self.data_len_type == constant.LengthType.LLLVAR:
-                len_data = "{0:03d}".format(content_len)
+                data_len_str = "{0:03d}".format(data_len)
             else:
                 raise err.Py8583ProgramError('field(%s) have invalid len_type(%s)' % (self, self.data_len_type))
 
-            len_data = self.encode_data(len_data, self.data_len_encode_type)
+            data_len_final = self.encode_data(data_len_str, self.data_len_encode_type)
 
-        return len_data
+        log.debug('pack field(%s), data_len_final(%s)', self.index, data_len_final)
+        return data_len_final
 
-    def decode_content_len(self, msg, pos):
-        content_len = 0
-        data_type = self.data_type
+    def get_data_len(self, msg, pos):
+        """
+
+        :param msg:
+        :type msg: str
+        :param pos:
+        :type pos: int
+        :return: data_len
+        :rtype: int
+        """
+
         data_len_type = self.data_len_type
         data_len_encode_type = self.data_len_encode_type
-        content_type = self.content_type
         data_len_max = self.data_len_max
 
-        if data_type == constant.DataType.ASCII and content_type == 'b':
-            data_len_max *= 2
-
         if data_len_type == constant.LengthType.FIXED:
-            content_len = data_len_max
+            data_len = data_len_max
         elif data_len_type == constant.LengthType.LVAR:
-            pass
+            data_len = int(self.decode_data(msg[pos:pos + 1], data_len_encode_type))
+            pos += 1
         elif data_len_type == constant.LengthType.LLVAR:
-            if data_len_encode_type == constant.DataType.ASCII:
-                content_len = int(self.decode_data(msg[pos:pos + 2], data_len_encode_type))
-                pos += 2
-            elif data_len_encode_type == constant.DataType.BCD:  # BCD
-                content_len = int(self.decode_data(msg[pos:pos + 1], data_len_encode_type))
-                pos += 1
-            else:
-                raise err.Py8583InvalidDataTypeError('unpack field(%s) got invalid data_len_encode_type' % self)
+            data_len = int(self.decode_data(msg[pos:pos + 2], data_len_encode_type))
+            pos += 2
         elif data_len_type == constant.LengthType.LLLVAR:
-            if data_len_encode_type == constant.DataType.ASCII:
-                content_len = int(self.decode_data(msg[pos:pos + 3], data_len_encode_type))
-                pos += 3
-            elif data_len_encode_type == constant.DataType.BCD:  # BCD
-                content_len = int(self.decode_data(msg[pos:pos + 2], data_len_encode_type))
-                pos += 2
-            else:
-                raise err.Py8583InvalidDataTypeError('unpack field(%s) got invalid data_len_encode_type' % self)
+            data_len = int(self.decode_data(msg[pos:pos + 3], data_len_encode_type))
+            pos += 3
+        else:
+            raise err.Py8583ProgramError('Field({}) have invalid data_len_type({})'.format(self, data_len_type))
 
-        if content_len > data_len_max:
-            raise ValueError('unpack field(%s) failed, data_len(%s) is too long > max(%s)' % (self, content_len, data_len_max))
-        if content_len == 0:
-            return ValueError('unpack field(%s) failed, data_len(%s) is 0' % (self, content_len))
+        if data_len > data_len_max:
+            raise ValueError('unpack field(%s) failed, data_len(%s) is too long > max(%s)' % (self, data_len, data_len_max))
 
-
-        return content_len, pos
+        log.debug('unpack field(%s), data_len(%s)', self.index, data_len)
+        return data_len, pos
 
     def encode_content(self, value):
+        """
+        封装value得到content
+        :param value:
+        :type value: object
+        :return: content
+        :rtype: str
+        """
+
         len_type = self.data_len_type
         data_len_max = self.data_len_max
         content_type = self.content_type
@@ -117,16 +142,24 @@ class Py8583Field(object):
             else:
                 formatter = '{0}'
 
-            value = formatter.format(value)
+            content = formatter.format(value)
         else:
-            value = str(value)
+            content = str(value)
 
         # 处理磁道信息
-        value = self._trans_track_data(value)
+        content = self._trans_track_data(content)
 
-        return value
+        return content
 
     def decode_content(self, content):
+        """
+
+        :param content:
+        :type content: str
+        :return: value
+        :rtype: object
+        """
+
         content_type = self.content_type
 
         if content_type == 'n':
@@ -140,41 +173,50 @@ class Py8583Field(object):
 
         return value
 
-    def encode_data(self, data, data_type):
+    def encode_data(self, content, data_type):
+        """
+        将content打包为data.
+        pack content into data.
+        :param content:
+        :param data_type:
+        :type content: str
+        :type data_type: int
+        :return: data
+        :rtype: str
+        """
+
         if data_type == constant.DataType.ASCII:
-            # ret = data.encode(self.encoding)
-            ret = data
+            data = content
         elif data_type == constant.DataType.BCD:
-            ret = str2bcd(data)
+            data = str2bcd(content)
         elif data_type == constant.DataType.BIN:
-            ret = data
+            data = content
         else:
             raise err.Py8583InvalidDataTypeError('data_type(%s) is invalid.' % data_type)
 
-        return ret
+        return data
 
     def decode_data(self, data, data_type):
         """
 
-
-        :param content_type:
         :param data:
         :param data_type:
         :type data: str
-        :return:
+        :type data_type: int
+        :return: content
+        :rtype: str
         """
 
         if data_type == constant.DataType.ASCII:
-            # ret = data.decode(self.encoding)
-            ret = data
+            content = data
         elif data_type == constant.DataType.BCD:
-            ret = bcd2str(data)
+            content = bcd2str(data)
         elif data_type == constant.DataType.BIN:
-            ret = data
+            content = data
         else:
             raise err.Py8583InvalidDataTypeError('data_type(%s) is invalid.' % data_type)
 
-        return ret
+        return content
 
     def pack(self, data):
         raise NotImplementedError()
@@ -216,27 +258,36 @@ class Py8583Field(object):
 
 class Py8583SimpleField(Py8583Field):
     def pack(self, value):
-        content = self.encode_content(value)
-        cotent_len = self.encode_content_len(content)
-        data = self.encode_data(content, self.data_type)
+        """
 
-        if cotent_len is None:
+        :param value:
+        :type value: object
+        :return:
+        :rtype: str
+        """
+
+        content = self.encode_content(value)
+        data = self.encode_data(content, self.data_type)
+        data_len = self.gen_data_len(data)
+
+        if data_len is None:  # fixed length
             return data
         else:
-            return cotent_len + data
+            return data_len + data
 
     def unpack(self, msg, pos=0):
-        data_type = self.data_type
+        """
 
-        content_len, pos = self.decode_content_len(msg, pos)
-        if data_type == constant.DataType.ASCII:
-            data_len = content_len
-        elif data_type == constant.DataType.BCD:
-            data_len = (content_len+1)//2
-        else:
-            data_len = content_len
+        :param msg:
+        :type msg: str
+        :param pos:
+        :type pos: int
+        :return:
+        :rtype: object
+        """
 
-        content = self.decode_data(msg[pos: pos+data_len], data_type)
+        data_len, pos = self.get_data_len(msg, pos)
+        content = self.decode_data(msg[pos: pos+data_len], self.data_type)
         value = self.decode_content(content)
 
         return value, pos+data_len

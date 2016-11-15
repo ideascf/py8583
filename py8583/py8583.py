@@ -1,14 +1,13 @@
 # coding=utf-8
 import binascii
 import json
-import struct
 import logging
+import struct
 
-from .spec import Py8583Spec
-from .field import Py8583Field
-from . import err
 from . import constant
-
+from . import err
+from .field import Py8583Field
+from .spec import Py8583Spec
 
 log = logging.getLogger(constant.LOGGER_NAME)
 

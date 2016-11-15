@@ -2,13 +2,12 @@
 """
 
 """
-import json
 import binascii
+import json
 import logging
 
 from . import constant
 from . import err
-
 
 log = logging.getLogger(constant.LOGGER_NAME)
 
